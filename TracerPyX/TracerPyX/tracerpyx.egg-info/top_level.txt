@@ -1,0 +1,11 @@
+ai_agent
+backend
+engine
+graph
+integrations
+metadata_cache
+parser
+reporter_command
+sandbox
+scanning_matcher
+symbol_resolver
