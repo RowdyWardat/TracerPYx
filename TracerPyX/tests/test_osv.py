@@ -1,9 +1,52 @@
-from integrations.osv import deduplicate, parse_pinned_requirements, query_package
+from pathlib import Path
+
+from integrations.osv import deduplicate, parse_dependency_manifest, parse_pinned_requirements, query_package
 
 def test_requirements_parser_only_accepts_exact_pins():
     packages, warnings = parse_pinned_requirements("flask==0.12.2\nrequests>=2.0\n# ignored\n")
     assert packages == [{"name": "flask", "version": "0.12.2", "source": "requirements.txt:1"}]
     assert len(warnings) == 1
+
+def test_supported_dependency_manifests_are_static_and_repository_relative(tmp_path):
+    cases = {
+        "requirements-prod.txt": "flask==2.0.0\n",
+        "constraints-prod.in": "flask==2.0.0\n",
+        "pyproject.toml": '[project]\ndependencies = ["requests==2.31.0"]\n',
+        "Pipfile": '[packages]\nflask = "==2.0.0"\n',
+        "Pipfile.lock": '{"default":{"flask":{"version":"==2.0.0"}},"develop":{}}\n',
+        "poetry.lock": '[[package]]\nname = "flask"\nversion = "2.0.0"\n',
+        "uv.lock": '[[package]]\nname = "flask"\nversion = "2.0.0"\n',
+        "setup.py": 'from setuptools import setup\nsetup(install_requires=["flask==2.0.0"])\n',
+        "setup.cfg": '[options]\ninstall_requires =\n    flask==2.0.0\n',
+    }
+    for name, content in cases.items():
+        path = tmp_path / name
+        path.write_text(content, encoding="utf-8")
+        packages, warnings = parse_dependency_manifest(path, f"deps/{name}")
+        assert not warnings, (name, warnings)
+        expected_name = "requests" if name == "pyproject.toml" else "flask"
+        assert packages and packages[0]["name"] == expected_name
+        assert packages[0]["source"].startswith(f"deps/{name}:")
+
+def test_setup_py_dynamic_dependencies_are_not_executed_or_assumed():
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "setup.py"
+        path.write_text('setup(install_requires=load_dependencies())\n', encoding="utf-8")
+        packages, warnings = parse_dependency_manifest(path, "setup.py")
+    assert packages == []
+    assert warnings and "dynamic install_requires" in warnings[0]
+
+def test_osv_service_failure_is_separate_from_a_clean_lookup(tmp_path):
+    from backend.analyzer import analyze_project
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("flask==2.0.0\n", encoding="utf-8")
+    def unavailable(_package):
+        raise TimeoutError("upstream unavailable")
+    result = analyze_project(root, "repo", parallel_dependencies=True, query_package_fn=unavailable)
+    assert result["analysis_diagnostics"]["advisory_lookup"] == "unavailable"
+    assert any("OSV lookup failed" in warning for warning in result["analysis_warnings"])
 
 def test_osv_record_fields_are_source_data(monkeypatch):
     record = {"id": "GHSA-test", "aliases": ["CVE-2099-1234"], "summary": "Test advisory", "details": "Upstream description",

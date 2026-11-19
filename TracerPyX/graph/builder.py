@@ -11,6 +11,15 @@ def build_graph(files: list[dict]):
     for file in files:
         imported={imp.get("module", "").split(".")[0] for imp in file.get("imports", [])}
         instances={item.get("variable"): item.get("class") for item in file.get("instances", [])}
+        aliases={a.get("name"): a.get("target", "") for a in file.get("aliases", [])}
+
+        def registered_target(expression):
+            if not expression or "(" in expression or not expression.replace(".", "").isidentifier():
+                return []
+            first, dot, rest = expression.partition(".")
+            resolved_expression = aliases.get(first, first) + (dot + rest if dot else "")
+            return [name for name in functions if name == resolved_expression or name.endswith("." + resolved_expression)]
+
         for dec in file.get("decorators", []):
             expression=dec.get("name", "")
             receiver=expression.split(".", 1)[0].split("(", 1)[0]
@@ -19,6 +28,38 @@ def build_graph(files: list[dict]):
             framework=(kind == "Flask" and "flask" in imported and method == "route") or (kind in {"FastAPI", "APIRouter"} and "fastapi" in imported and method in {"get", "post", "put", "patch", "delete", "options", "head", "api_route"})
             if framework:
                 file.setdefault("entry_points", []).append({"name": dec["function"], "line": dec.get("line"), "kind": "verified-framework-route", "registration": f"@{expression}; {receiver} is constructed as {kind}; framework import detected"})
+            celery_task = (kind == "Celery" and "celery" in imported and method in {"task", "shared_task"})
+            shared_task = expression.rsplit(".", 1)[-1].split("(", 1)[0] == "shared_task" and any(target.startswith("celery.") for target in aliases.values())
+            if celery_task or shared_task:
+                file.setdefault("entry_points", []).append({"name": dec["function"], "line": dec.get("line"), "kind": "verified-celery-task", "registration": f"@{expression}; Celery import and task registration detected"})
+        for call in file.get("calls", []):
+            name = call.get("name", "")
+            receiver, dot, method = name.partition(".")
+            kind = instances.get(receiver) if dot else None
+            target_expression = None
+            registration_kind = None
+            if kind == "Flask" and "flask" in imported and method == "add_url_rule":
+                target_expression = call.get("keywords", {}).get("view_func")
+                registration_kind = "verified-flask-url-rule"
+            elif kind in {"FastAPI", "APIRouter"} and "fastapi" in imported and method == "add_api_route":
+                target_expression = call.get("keywords", {}).get("endpoint")
+                if not target_expression and len(call.get("arguments", [])) > 1:
+                    target_expression = call["arguments"][1]
+                registration_kind = "verified-fastapi-route"
+            for target in registered_target(target_expression):
+                file.setdefault("entry_points", []).append({"name": target, "line": call.get("line"), "kind": registration_kind,
+                    "registration": f"{name} at {file['path']}:{call.get('line')} statically resolves to {target}"})
+        # Django route functions become roots only when a statically resolved
+        # django.urls.path/re_path registration points at a project function.
+        django_path_aliases = {name for name, target in aliases.items() if target in {"django.urls.path", "django.urls.re_path"}}
+        if "django" in imported and django_path_aliases:
+            for call in file.get("calls", []):
+                if call.get("name", "").rsplit(".", 1)[-1] not in django_path_aliases or len(call.get("arguments", [])) < 2:
+                    continue
+                expression = call["arguments"][1]
+                candidates = registered_target(expression)
+                if len(candidates) == 1:
+                    file.setdefault("entry_points", []).append({"name": candidates[0], "line": call.get("line"), "kind": "verified-django-url", "registration": f"django.urls.{call['name'].rsplit('.', 1)[-1]} at {file['path']}:{call.get('line')} resolves to {candidates[0]}"})
     for name in functions: definitions[name.rsplit(".",1)[-1]].append(name); graph.setdefault(name,set())
     for file in files:
         for alias in file.get("aliases",[]):

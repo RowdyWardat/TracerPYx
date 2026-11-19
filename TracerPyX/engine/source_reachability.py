@@ -45,6 +45,7 @@ def analyze_source_finding(finding: dict, parsed_files: list[dict], graph: dict[
     out = dict(finding)
     out.update({"module": resolved["module"], "resolved_function": resolved["function"],
                 "resolved_class": resolved["class"], "graph_node": resolved["node"],
+                "pattern_confidence": finding.get("confidence", "LOW"),
                 "graph_node_exists": bool(resolved["node"] in graph) if resolved["node"] else False,
                 "call_path": path, "registration_evidence": registration,
                 "vulnerability_status": "UNCONFIRMED_STATIC_PATTERN", "data_flow_evidence": None,
