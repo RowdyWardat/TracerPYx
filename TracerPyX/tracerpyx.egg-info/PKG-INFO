@@ -5,6 +5,8 @@ Requires-Python: >=3.11
 Requires-Dist: fastapi<1,>=0.115
 Requires-Dist: uvicorn[standard]<1,>=0.30
 Requires-Dist: python-multipart<1,>=0.0.9
+Requires-Dist: httpx<1,>=0.27
+Requires-Dist: cryptography<50,>=42
 Provides-Extra: test
 Requires-Dist: pytest<9,>=8; extra == "test"
 Requires-Dist: httpx<1,>=0.27; extra == "test"

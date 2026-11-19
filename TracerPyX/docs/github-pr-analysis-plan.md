@@ -1,0 +1,27 @@
+# GitHub pull request analysis integration plan
+
+## Existing architecture inspected
+
+- `backend/main.py` owns the FastAPI routes and currently implements ZIP upload, safe ZIP extraction, the complete project scan orchestration, in-memory result retention, and scan-grounded chat.
+- `parser/python_parser.py` parses Python files with `ast` and records functions, imports, decorators, calls, and locations without importing repository code.
+- `graph/builder.py` resolves a conservative intra-project call graph and recognized Flask/FastAPI routes. `engine/reachability.py` and `engine/source_reachability.py` classify advisory and source-pattern reachability, preserving uncertainty where analysis is incomplete.
+- `parser/security_patterns.py` reports heuristic source leads (including eval/exec, formatted SQL, unsafe deserialization, dynamic file paths, and possible hardcoded secrets); it does not establish taint or exploitability. `integrations/osv.py` queries OSV for exact-pinned declarations in requirements and constraints `.txt`/`.in` files, pyproject.toml, Pipfile, Pipfile.lock, poetry.lock, uv.lock, setup.py, and setup.cfg. Dynamic declarations and non-registry lock entries are surfaced as warnings.
+- `backend/benchmark.py` and `scanning_matcher/advisories.py` support source-annotated/synthetic benchmark output. `reporter_command/json_report.py` makes results JSON-safe. Findings are combined in `analyze_zip` and retained in process memory.
+- `frontend/app/page.tsx` is a single Next.js dashboard with ZIP upload, findings, graph, JSON export, and chat. Styling is in `frontend/app/styles.css`.
+- Automated tests are pytest tests in `tests/`; the frontend has no test runner. The app has no account system, durable database, GitHub connector, job queue, or credential encryption. ZIP input is bounded to 20 MB compressed, 100 MB expanded, and 2,000 archive entries.
+
+## Integration plan
+
+1. Extract the existing scan orchestration into a reusable directory-based analysis function. Keep ZIP validation/extraction and `/api/analyze` behavior, but have it call the same function that PR analysis calls.
+2. Add GitHub App user authorization, installation discovery, and repository-scoped installation tokens. Use an OAuth state cookie, opaque HttpOnly session cookie, encrypted-at-rest user-token storage, environment-only App credentials/signing key/encryption key, and never return tokens to the browser. Keep the user token encrypted and mint short-lived installation tokens only on the server for the selected installation.
+3. Add a GitHub REST client with bounded timeouts, safe errors, pagination, retry-after/rate-limit handling, and endpoints for viewer, repositories, pull requests, metadata, trees, and blobs. Pin every operation to resolved base/head SHAs. Build the full Python and dependency/configuration context from each commit tree. Enforce explicit file/byte/time limits and fail or report incomplete coverage rather than silently dropping files.
+4. Store jobs and completed results in SQLite; encrypt OAuth credentials with Fernet using a deployment-provided key. Use stable job IDs, deduplicate/cache on repository ID + base SHA + head SHA + analyzer version, expose progress from actual worker stages, and make cancellation best-effort. Jobs are static analysis only; repository code is never run.
+5. Run the shared analyzer on both complete base and head snapshots. Compare normalized finding identities and changed source lines to classify findings as introduced, worsened, fixed, pre-existing, or uncertain. Keep detection, graph reachability, taint evidence, and exploitability separate; do not infer taint from reachability.
+6. Return file/line/snippet, evidence, graph path, attribution, confidence, coverage, and safe GitHub links. Only offer inline comments for exact added lines in the PR diff. Publishing is an explicit user action; update matching TracerPyX markers to avoid duplicates and send unanchored findings only in the summary.
+7. Add backend tests for OAuth/session safety, GitHub pagination/errors, snapshot limits, pinned SHAs, base/head attribution, changed-line anchors, deduplication, and review publication behavior. Preserve ZIP regression tests. Run the existing suite and frontend build/typecheck where available. Attempt two real public PR workflows only if network/API access permits; clearly record any external blocker.
+
+## Known constraints to verify during implementation
+
+- GitHub App installation access is limited to repositories the user has installed the App on. Private fork heads require an installation on the private fork. Review publishing requires the App's Pull requests write permission; deployments that do not publish can leave that permission disabled.
+- The current analyzer is a heuristic static analyzer. Cross-file call graph evidence exists, with selected Flask, FastAPI, Django, Celery, and CLI patterns, but it does not provide complete framework route discovery or source-to-sink taint tracking. Dependency extraction is limited to exact static versions in the listed manifests; it does not resolve transitive dependencies or establish installed runtime use. The PR report must state these limits and avoid asserting unsupported taint or exploitability.
+- Existing jobs/results are process-local. The integration will add durable SQLite state for PR jobs and credentials, but running a multi-worker hosted deployment still needs a shared job queue, shared database, deployment-managed encryption keys, and per-user application authentication/authorization.
